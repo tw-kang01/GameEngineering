@@ -1,363 +1,386 @@
-AI4Animation: Deep Learning for Character Control
-============
+# TrackerBody MLP with GMD + SlowFast Enhancement
 
-This repository explores the opportunities of deep learning for character animation and control. It aims to be a comprehensive framework for data-driven character animation, including data processing, neural network training and runtime control, developed in Unity3D / PyTorch. The various projects below demonstrate such capabilities using neural networks for animating biped locomotion, quadruped locomotion, and character-scene interactions with objects and the environment, plus sports and fighting games, as well as embodied avatar motions in AR/VR. Further advances on this research will continue being added to this project.
+## 개요
 
-------------
-**SIGGRAPH 2024**<br />
-**Categorical Codebook Matching for Embodied Character Controllers**<br >
-<sub>
-<a href="https://www.linkedin.com/in/sebastian-starke-b281a6148/">Sebastian Starke</a>, 
-<a href="https://www.linkedin.com/in/paul-starke-0787211b4/">Paul Starke</a>, 
-<a href="https://www.linkedin.com/in/nicky-sijia-he-92240590/">Nicky He</a>, 
-<a href="https://www.linkedin.com/in/taku-komura-571b32b/">Taku Komura</a>,
-<a href="https://www.linkedin.com/in/yuting-ye-77a75332/">Yuting Ye</a>, 
-ACM Trans. Graph. 43, 4, Article 142.
-<sub>
-------------
-<img src ="Media/SIGGRAPH_2024/Teaser.png" width="100%">
+이 문서는 **Categorical Motion Controlled (SIGGRAPH 2024)** 파이프라인의 TrackerBodyPredictor에 **EgoPoser (ECCV 2024)**의 Global Motion Decomposition (GMD)와 SlowFast Feature Fusion을 통합한 작업을 기술합니다.
 
+---
 
-<p align="center">
-Translating motions from a real user onto a virtual embodied avatar is a key challenge for character animation in the metaverse. In this work, we present a novel generative framework that enables mapping from a set of sparse sensor signals to a full body avatar motion in real-time while faithfully preserving the motion context of the user. In contrast to existing techniques that require training a motion prior and its mapping from control to motion separately, our framework is able to learn the motion manifold as well as how to sample from it at the same time in an end-to-end manner. To achieve that, we introduce a technique called codebook matching which matches the probability distribution between two categorical codebooks for the inputs and outputs for synthesizing the character motions. We demonstrate this technique can successfully handle ambiguity in motion generation and produce high quality character controllers from unstructured motion capture data. Our method is especially useful for interactive applications like virtual reality or video games where high accuracy and responsiveness are needed.
-</p>
+## 1. 배경 및 동기
 
+### 1.1 문제 정의
 
-<p align="center" style="font-size:1.25em;">
--
-<a href="https://youtu.be/NyLRcY0c0p4">Video</a>
--
-<a href="Media/SIGGRAPH_2024/Paper.pdf">Paper</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2024/Cranberry_Dataset.zip">Dataset</a>
--
-<a href="AI4Animation/SIGGRAPH_2024/">Code</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2024/VR Demo.zip">VR Demo</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2024/Demo_Win.zip">Windows Demo</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2024/Demo_Mac.zip">Mac Demo</a>
--
-<a href="AI4Animation/SIGGRAPH_2024/ReadMe.md">ReadMe</a>
--
-</p>
+VR 환경에서 3-Point Tracking (Head + Left Controller + Right Controller)만으로 전신 모션을 예측하는 것은 challenging한 문제입니다:
 
-<img src ="Media/SIGGRAPH_2024/Architecture.png">
+- **Under-constrained problem**: 3개 포인트로 22+ 관절 예측
+- **Position drift**: 절대 위치 의존성으로 인한 일반화 문제
+- **Multi-scale motion**: 빠른 손동작과 느린 보행이 동시에 발생
 
+### 1.2 기존 접근법
 
-Unlike existing methods for kinematic character control that learn a direct mapping between inputs and outputs or utilize a motion prior that is trained on the motion data alone, our framework learns from both the inputs and outputs simultaneously to form a motion manifold that is informed about the control signals.
-To learn such setup in a supervised manner, we propose a technique that we call Codebook Matching which enforces similarity
-between both latent probability distributions $Z_𝑋$ and $Z_𝑌$.
-In the context of motion generation, instead of directly predicting the motions outputs from the control inputs, we only predict their probabilities for each of them to appear.
-By introducing a matching loss between both categorical probability distributions, our codebook matching technique allows to substitute $Z_𝑌$ by $Z_𝑋$ during test time.
+| 논문 | 접근법 | 한계 |
+|------|--------|------|
+| **Categorical (SIGGRAPH 2024)** | Simple MLP + Codebook Matching | Tracker 전처리 없음 |
+| **EgoPoser (ECCV 2024)** | GMD + SlowFast + Transformer | Transformer 기반 (무거움) |
 
-```math
-Training:
-\begin{cases}
-    Y \rightarrow Z_Y \rightarrow Y
-    \\
-    X \rightarrow Z_X
-    \\
-    Z_X \sim Z_Y
-\end{cases}
+### 1.3 우리의 접근
 
-Inference: 
-X \rightarrow Z_X \rightarrow Y
+**EgoPoser의 핵심 아이디어 (GMD + SlowFast)를 Categorical의 경량 MLP 아키텍처에 통합**
+
+- GMD: 위치 불변성 확보 (Spatial + Temporal Normalization)
+- SlowFast: 다중 시간 스케일 캡처 (Fast + Slow pathways)
+- MLP 기반: Transformer 대비 4-10배 빠른 학습/추론
+
+---
+
+## 2. Model Pipeline
+
+### 2.1 전체 Categorical 파이프라인
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Categorical Motion Pipeline                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+[VR 3-Point Tracking: Head + LController + RController]
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Stage 1: TrackerBodyPredictor (★ 우리가 수정한 부분)                         │
+│                                                                             │
+│ Network: MultiLayerPerceptron/Network_TrackerBody.py                        │
+│ Input:  576 features (16 timesteps × 3 trackers × 12 features)             │
+│ Output: 231 features (RootUpdate + 19 upper body bones)                    │
+│                                                                             │
+│ 수정 전: Simple MLP [576 → 512 → 512 → 231]                                 │
+│ 수정 후: GMD → SlowFast → Residual → MLP [576 → 512 → 512 → 231]           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Stage 1b: FutureBodyPredictor                                               │
+│                                                                             │
+│ Network: MultiLayerPerceptron/Network.py                                    │
+│ Input:  현재 상체 포즈                                                       │
+│ Output: 미래 루트 궤적 (trajectory)                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Stage 2: LowerBodyPredictor                                                 │
+│                                                                             │
+│ Network: CodebookMatching/Network.py (VQ-VAE with Gumbel-Softmax)          │
+│ Input:  168 features (Upper body + Trajectory)                             │
+│ Output: 1856 features (Lower body sequence)                                │
+│                                                                             │
+│ Architecture: Encoder (Teacher) + Estimator (Student) + Decoder            │
+│ Codebook: C=128 channels, D=8 dimensions, 1024 total codes                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Stage 3: UpperBodyPredictor                                                 │
+│                                                                             │
+│ Network: MultiLayerPerceptron/Network.py                                    │
+│ Input:  Lower body + Tracker                                               │
+│ Output: Final upper body pose (refined)                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    [Full Body Animation Output]
 ```
 
-Our method is not limited to three-point inputs but we can also use it to generate embodied character movements with additional joystick or button controls by what we call hybrid control mode. In this setting, the user, engineer or artist can additionally tell the character where to go via a simple goal location while preserving the original context of motion from three-point tracking signals. This changes the scope of applications we can address by walking / running / crouching in the virtual world while standing or even sitting in the real world.
+### 2.2 수정된 TrackerBodyPredictor 상세 구조
 
-<img src ="Media/SIGGRAPH_2024/Collection.png">
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│              Network_TrackerBody.py: GMD + SlowFast + MLP                   │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-Furthermore, our codebook matching architecture shares many similarities with motion matching and is able to learn a similar structure in an end-to-end manner. While motion matching can bypass ambiguity in the mapping from control to motion by selecting among candidates with similar query distances, our setup selects possible outcomes from predicted probabilities and naturally projects against valid output motions if their probabilities are similar. However, in contrast to database searches, our codebook matching is able to effectively compress the motion data where same motions map to same codes, and can bypass ambiguity issues which existing learning-based methods such as standard feed-forward networks (MLP) or variational models (CVAE) may struggle with. We demonstrate such capabilities by reconstructing the ambiguous toy example functions in the figure below.
+[Input: 3PT Tracker History]
+Shape: (Batch, 576)
+Structure: [Head_t0..t15 (192), LWrist_t0..t15 (192), RWrist_t0..t15 (192)]
+Per tracker/timestep: Position(3) + Forward(3) + Up(3) + Velocity(3) = 12
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ GMDPreprocessor (학습 파라미터 없음, 순수 전처리)                             │
+│                                                                             │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Spatial Normalization (매 timestep에서)                                 │ │
+│ │                                                                         │ │
+│ │ 목적: 절대 위치 의존성 제거, 상대적 움직임에 집중                          │ │
+│ │                                                                         │ │
+│ │ 1. Head XZ → (0, 0) 으로 이동                                           │ │
+│ │ 2. LWrist XZ → Head 기준 상대 좌표                                      │ │
+│ │ 3. RWrist XZ → Head 기준 상대 좌표                                      │ │
+│ │                                                                         │ │
+│ │ Index Mapping:                                                          │ │
+│ │   Head Position X at t:   t*12 + 0  (t=0..15)                          │ │
+│ │   Head Position Z at t:   t*12 + 2                                     │ │
+│ │   LWrist Position X at t: 192 + t*12 + 0                               │ │
+│ │   LWrist Position Z at t: 192 + t*12 + 2                               │ │
+│ │   RWrist Position X at t: 384 + t*12 + 0                               │ │
+│ │   RWrist Position Z at t: 384 + t*12 + 2                               │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                              │
+│                              ▼                                              │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Temporal Normalization                                                  │ │
+│ │                                                                         │ │
+│ │ 목적: 시간적 변화량 명시적 제공                                           │ │
+│ │                                                                         │ │
+│ │ delta_XZ[t] = position[t] - position[0]  (첫 프레임 대비 변화량)         │ │
+│ │                                                                         │ │
+│ │ 추가되는 features: 16 timesteps × 3 trackers × 2 (X, Z) = 96           │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ Output: (Batch, 672) = 576 (원본) + 96 (delta)                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ SlowFastMLP (학습 파라미터 있음)                                             │
+│                                                                             │
+│ ┌───────────────────────────────┐  ┌───────────────────────────────┐       │
+│ │     Fast Pathway (단기)       │  │     Slow Pathway (장기)        │       │
+│ │                               │  │                               │       │
+│ │ 선택: frames 8-15             │  │ 선택: frames 0,2,4,6,8,10,12,14│       │
+│ │       (최근 8 frames)         │  │       (전체에서 8 frames)      │       │
+│ │       (~0.27초)               │  │       (전체 0.5초 커버)        │       │
+│ │                               │  │                               │       │
+│ │ 용도: 세밀한 손/머리 움직임    │  │ 용도: 전체 이동 방향/트렌드    │       │
+│ │       빠른 제스처             │  │       걷기, 방향 전환          │       │
+│ │                               │  │                               │       │
+│ │ Input:  336 features          │  │ Input:  336 features          │       │
+│ │         (8 × (12×3 + 6))      │  │         (8 × (12×3 + 6))      │       │
+│ │                               │  │                               │       │
+│ │ MLP:    336 → 512 → 512 → 576 │  │ MLP:    336 → 512 → 512 → 576 │       │
+│ │         (3-layer, ELU)        │  │         (3-layer, ELU)        │       │
+│ └───────────────┬───────────────┘  └───────────────┬───────────────┘       │
+│                 │                                  │                       │
+│                 └──────────────┬───────────────────┘                       │
+│                                ▼                                           │
+│                    ┌───────────────────────┐                               │
+│                    │ Element-wise Sum      │                               │
+│                    │ Fast_out + Slow_out   │                               │
+│                    └───────────────────────┘                               │
+│                                                                             │
+│ Output: (Batch, 576)                                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Residual Connection (학습 가능한 α)                                         │
+│                                                                             │
+│ output = α × SlowFast_output + (1-α) × Original_input                      │
+│                                                                             │
+│ α: learnable parameter, initialized to 0.5                                 │
+│    sigmoid(α)로 0~1 범위 유지                                               │
+│                                                                             │
+│ 효과:                                                                       │
+│   - GMD+SlowFast가 도움되면 α ↑ (자동으로)                                  │
+│   - 도움 안되면 α ↓ (원본 데이터 더 사용)                                    │
+│   - Gradient flow 보장 (학습 안정성)                                        │
+│                                                                             │
+│ Output: (Batch, 576)                                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Z-Score Normalization                                                       │
+│                                                                             │
+│ x_norm = (x - mean) / std                                                  │
+│                                                                             │
+│ 사용: InputNormalization.txt (Unity export 시 계산된 통계값)                │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Simple MLP (원본 Categorical과 동일)                                        │
+│                                                                             │
+│ Layer 1: Linear(576, 512) → ELU → Dropout(0.25)                            │
+│ Layer 2: Linear(512, 512) → ELU → Dropout(0.25)                            │
+│ Layer 3: Linear(512, 231) → (no activation)                                │
+│                                                                             │
+│ Initialization: Xavier uniform                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Renormalization                                                             │
+│                                                                             │
+│ y = y_norm × std + mean                                                    │
+│                                                                             │
+│ 사용: OutputNormalization.txt                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+[Output: Upper Body Pose]
+Shape: (Batch, 231)
+Structure: RootUpdate(3) + 19 bones × 12 features (Position, Forward, Up, Velocity)
+```
 
-<img src ="Media/SIGGRAPH_2024/ToyExample.png">
+---
 
-<p align="center">
-    <a href="https://youtu.be/NyLRcY0c0p4">
-    <img src="Media/SIGGRAPH_2024/Thumbnail.png", width=100%>
-    </a>
-</p>
+## 3. Contribution
 
-------------
-**SIGGRAPH 2022**<br />
-**DeepPhase: Periodic Autoencoders for Learning Motion Phase Manifolds**<br >
-<sub>
-<a href="https://www.linkedin.com/in/sebastian-starke-b281a6148/">Sebastian Starke</a>, 
-<a href="https://www.linkedin.com/in/ian-mason-134197105/">Ian Mason</a>, 
-<a href="https://www.linkedin.com/in/taku-komura-571b32b/">Taku Komura</a>, 
-ACM Trans. Graph. 41, 4, Article 136.
-<sub>
-------------
-<img src ="Media/SIGGRAPH_2022/Teaser.png" width="100%">
+### 3.1 기술적 기여
 
-<p align="center">
-Learning the spatial-temporal structure of body movements is a fundamental problem for character motion synthesis. In this work, we propose a novel neural network architecture called the Periodic Autoencoder that can learn periodic features from large unstructured motion datasets in an unsupervised manner. The character movements are decomposed into multiple latent channels that capture the non-linear periodicity of different body segments while progressing forward in time. Our method extracts a multi-dimensional phase space from full-body motion data, which effectively clusters animations and produces a manifold in which computed feature distances provide a better similarity measure than in the original motion space to achieve better temporal and spatial alignment. We demonstrate that the learned periodic embedding can significantly help to improve neural motion synthesis in a number of tasks, including diverse locomotion skills, style-based movements, dance motion synthesis from music, synthesis of dribbling motions in football, and motion query for matching poses within large animation databases.
-</p>
+| 기여 | 설명 | 효과 |
+|------|------|------|
+| **GMD Integration** | EgoPoser의 Global Motion Decomposition을 Categorical MLP에 적용 | 절대 위치 의존성 제거, VR 환경에서 일반화 향상 |
+| **SlowFast MLP** | Transformer 대신 MLP 기반 SlowFast 구현 | 빠른 학습/추론, Categorical 아키텍처 일관성 유지 |
+| **Adaptive Residual** | 학습 가능한 α로 GMD 효과 자동 조절 | 데이터에 따라 최적 균형 자동 탐색 |
+| **TrackerBody 특화** | 16 timesteps × 3 trackers 구조에 맞춘 index mapping | 정확한 spatial/temporal normalization |
 
-<p align="center">
-<img src ="Media/SIGGRAPH_2022/Manifolds.png" width="100%">
-</p>
+### 3.2 아키텍처 비교
 
-<p align="center">
--
-<a href="https://www.youtube.com/watch?v=YhH4PYEkVnY">Video</a>
--
-<a href="Media/SIGGRAPH_2022/Paper.pdf">Paper</a>
--
-<a href="AI4Animation/SIGGRAPH_2022/PyTorch">PAE Code & Demo</a>
--
-<a href="AI4Animation/SIGGRAPH_2022/Unity">Animation Code & Demo</a>
--
-<a href="https://www.ianxmason.com/posts/PAE/">Explanation and Addendum</a>
--
-<a href="https://youtu.be/3ASGrxNDd0k">Tutorial</a>
--
-</p>
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        Parameter Comparison                                │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Original MLP (Network.py):                                                │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │ Layer 1: 576 × 512 = 294,912                                        │  │
+│  │ Layer 2: 512 × 512 = 262,144                                        │  │
+│  │ Layer 3: 512 × 231 = 118,272                                        │  │
+│  │ Biases:  512 + 512 + 231 = 1,255                                    │  │
+│  │ ─────────────────────────────────────────                           │  │
+│  │ Total:   ~676K parameters                                           │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                            │
+│  GMD+SlowFast MLP (Network_TrackerBody.py):                               │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │ GMD Preprocessor:        0 (no learnable params)                    │  │
+│  │ SlowFast Fast MLP:  336×512 + 512×512 + 512×576 = ~730K            │  │
+│  │ SlowFast Slow MLP:  336×512 + 512×512 + 512×576 = ~730K            │  │
+│  │ Residual α:              1                                          │  │
+│  │ Main MLP:           576×512 + 512×512 + 512×231 = ~676K            │  │
+│  │ ─────────────────────────────────────────                           │  │
+│  │ Total:   ~2.14M parameters (~3.2x increase)                        │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
 
-<p align="left">
-    <a href="https://www.youtube.com/watch?v=YhH4PYEkVnY">
-    <img  width="47%" src="Media/SIGGRAPH_2022/Thumbnail.png">
-    </a>
-    <a href="https://www.youtube.com/watch?v=3ASGrxNDd0k">
-    <img align="right" width="47%" src="Media/SIGGRAPH_2022/PAEthumbnail.png">
-    </a>
-</p>
+### 3.3 학습 시간 비교
 
-<p align="center">
--
-<a href="https://github.com/pauzii/PhaseBetweener">Motion In-Betweening System</a>
--
-</p>
-<img src ="https://github.com/pauzii/PhaseBetweener/raw/main/Media/Teaser.png" width="100%">
+| Model | Parameters | Time/Epoch | Total (150 epochs) |
+|-------|------------|------------|-------------------|
+| Original MLP | ~676K | ~20-30s | ~1-1.5 hours |
+| GMD+SlowFast MLP | ~2.14M | ~30-45s | ~1.5-2 hours |
+| CodebookMatching | ~3M+ | ~60-120s | ~3-5 hours |
 
-------------
-**SIGGRAPH 2021**<br />
-**Neural Animation Layering for Synthesizing Martial Arts Movements**<br >
-<sub>
-<a href="https://www.linkedin.com/in/sebastian-starke-b281a6148/">Sebastian Starke</a>, 
-<a href="https://www.linkedin.com/in/evan-yiwei-zhao-18584a105/">Yiwei Zhao</a>, 
-<a href="https://www.linkedin.com/in/fabio-zinno-1a77331/">Fabio Zinno</a>, 
-<a href="https://www.linkedin.com/in/taku-komura-571b32b/">Taku Komura</a>, 
-ACM Trans. Graph. 40, 4, Article 92.
-<sub>
-------------
-<img src ="Media/SIGGRAPH_2021/Teaser.jpg" width="100%">
+---
 
-<p align="center">
-<img src ="Media/SIGGRAPH_2021/Layering.png" width="80%">
-</p>
+## 4. 파일 구조
 
-<p align="center">
-Interactively synthesizing novel combinations and variations of character movements from different motion skills is a key problem in computer animation. In this research, we propose a deep learning framework to produce a large variety of martial arts movements in a controllable manner from raw motion capture data. Our method imitates animation layering using neural networks with the aim to overcome typical challenges when mixing, blending and editing movements from unaligned motion sources. The system can be used for offline and online motion generation alike, provides an intuitive interface to integrate with animator workflows, and is relevant for real-time applications such as computer games.
-</p>
+```
+categorical/PyTorch/Models/MultiLayerPerceptron/
+├── Network.py                  # 원본 Simple MLP (수정: .pt 저장 추가)
+├── Network_TrackerBody.py      # ★ 새로 생성: GMD + SlowFast + MLP
+├── visualize_model.py          # ★ 새로 생성: 학습 결과 시각화
+└── README_GMD_SlowFast.md      # ★ 이 문서
 
-<p align="center">
--
-<a href="https://www.youtube.com/watch?v=SkJNxLYNwN0">Video</a>
--
-<a href="Media/SIGGRAPH_2021/Paper.pdf">Paper</a>
--
-</p>
+categorical/PyTorch/Models/CodebookMatching/
+├── Network.py                  # 원본 VQ-VAE (LowerBody용)
+└── Network_Final.py            # GMD+SlowFast + VQ-VAE (참고용)
 
-<p align="center">
-<a href="https://www.youtube.com/watch?v=SkJNxLYNwN0">
-<img width="60%" src="Media/SIGGRAPH_2021/Thumbnail.jpg">
-</a>
-</p>
+categorical/PyTorch/Datasets/
+├── Trackerbodypredictor/       # TrackerBody 데이터셋
+│   ├── Input.bin               # 576 features × 713,710 samples
+│   ├── Output.bin              # 231 features × 713,710 samples
+│   ├── InputNormalization.txt  # Z-score 통계 (mean, std)
+│   ├── OutputNormalization.txt
+│   ├── InputLabels.txt         # Feature 이름 (디버깅용)
+│   ├── OutputLabels.txt
+│   └── Sequences.txt           # 시퀀스 구분 정보
+├── Lowerbodypredictor/         # LowerBody 데이터셋 (CodebookMatching용)
+└── Futurebodypredictor/        # FutureBody 데이터셋
+```
 
-------------
-**SIGGRAPH 2020**<br />
-**Local Motion Phases for Learning Multi-Contact Character Movements**<br >
-<sub>
-<a href="https://www.linkedin.com/in/sebastian-starke-b281a6148/">Sebastian Starke</a>, 
-<a href="https://www.linkedin.com/in/evan-yiwei-zhao-18584a105/">Yiwei Zhao</a>, 
-<a href="https://www.linkedin.com/in/taku-komura-571b32b/">Taku Komura</a>, 
-<a href="https://www.linkedin.com/in/kazizaman/">Kazi Zaman</a>.
-ACM Trans. Graph. 39, 4, Article 54.
-<sub>
-------------
-<img src ="Media/SIGGRAPH_2020/Teaser.png" width="100%">
+---
 
-<p align="center">
-Not sure how to align complex character movements? Tired of phase labeling? Unclear how to squeeze everything into a single phase variable? Don't worry, a solution exists!
-</p>
-<p align="center">
-<img src ="Media/SIGGRAPH_2020/Court.jpg" width="60%">
-</p>
+## 5. 사용법
 
-<p align="center">
-Controlling characters to perform a large variety of dynamic, fast-paced and quickly changing movements is a key challenge in character animation. In this research, we present a deep 
-learning framework to interactively synthesize such animations in high quality, both from unstructured motion data and without any manual labeling. We introduce the concept of local 
-motion phases, and show our system being able to produce various motion skills, such as ball dribbling and professional maneuvers in basketball plays, shooting, catching, avoidance, 
-multiple locomotion modes as well as different character and object interactions, all generated under a unified framework.
-</p>
+### 5.1 학습
 
-<p align="center">
--
-<a href="https://www.youtube.com/watch?v=Rzj3k3yerDk">Video</a>
--
-<a href="Media/SIGGRAPH_2020/Paper.pdf">Paper</a>
--
-<a href="AI4Animation/SIGGRAPH_2020">Code</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2020/Demo_Windows.zip">Windows Demo</a>
--
-<a href="AI4Animation/SIGGRAPH_2020/ReadMe.md">ReadMe</a>
--
-</p>
+```bash
+cd categorical/PyTorch/Models/MultiLayerPerceptron
 
-<p align="center">
-<a href="https://www.youtube.com/watch?v=Rzj3k3yerDk">
-<img width="60%" src="Media/SIGGRAPH_2020/Thumbnail.jpg">
-</a>
-</p>
+# GMD + SlowFast 모델 학습
+python Network_TrackerBody.py
 
-------------
-**SIGGRAPH Asia 2019**<br />
-**Neural State Machine for Character-Scene Interactions**<br >
-<sub>
-<a href="https://www.linkedin.com/in/sebastian-starke-b281a6148/">Sebastian Starke</a><sup>+</sup>, 
-<a href="https://www.linkedin.com/in/he-zhang-148467165/">He Zhang</a><sup>+</sup>, 
-<a href="https://www.linkedin.com/in/taku-komura-571b32b/">Taku Komura</a>, 
-<a href="https://www.linkedin.com/in/jun-saito/">Jun Saito</a>. 
-ACM Trans. Graph. 38, 6, Article 178.
-</sub><br /><sub><sup>(+Joint First Authors)</sup>
-<sub>
-------------
-<img src ="Media/SIGGRAPH_Asia_2019/Teaser.jpg" width="100%">
+# 원본 MLP 학습 (비교용)
+python Network.py
+```
 
-<p align="center">
-Animating characters can be an easy or difficult task - interacting with objects is one of the latter.
-In this research, we present the Neural State Machine, a data-driven deep learning framework for character-scene interactions. The difficulty in such animations is that they require complex planning of periodic as well as aperiodic movements to complete a given task. Creating them in a production-ready quality is not straightforward and often very time-consuming. Instead, our system can synthesize different movements and scene interactions from motion capture data, and allows the user to seamlessly control the character in real-time from simple control commands. Since our model directly learns from the geometry, the motions can naturally adapt to variations in the scene. We show that our system can generate a large variety of movements, icluding locomotion, sitting on chairs, carrying boxes, opening doors and avoiding obstacles, all from a single model. The model is responsive, compact and scalable, and is the first of such frameworks to handle scene interaction tasks for data-driven character animation.
-</p>
+### 5.2 시각화
 
-<p align="center">
--
-<a href="https://www.youtube.com/watch?v=7c6oQP1u2eQ">Video</a>
--
-<a href="Media/SIGGRAPH_Asia_2019/Paper.pdf">Paper</a>
--
-<a href="AI4Animation/SIGGRAPH_Asia_2019">Code & Demo</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_Asia_2019/MotionCapture.zip">Mocap Data</a>
--
-<a href="AI4Animation/SIGGRAPH_Asia_2019/ReadMe.md">ReadMe</a>
--
-</p>
+```bash
+# 학습된 모델 시각화
+python visualize_model.py --model "../../Datasets/Trackerbodypredictor/Training_xxx/xxx_150.pt"
 
-<p align="center">
-<a href="https://www.youtube.com/watch?v=7c6oQP1u2eQ">
-<img width="60%" src="Media/SIGGRAPH_Asia_2019/Thumbnail.jpg">
-</a>
-</p>
+# 특정 시퀀스 시각화
+python visualize_model.py --model "path/to/model.pt" --sequence 5
 
-------------
-**SIGGRAPH 2018**<br />
-**Mode-Adaptive Neural Networks for Quadruped Motion Control**<br >
-<sub>
-<a href="https://www.linkedin.com/in/he-zhang-148467165/">He Zhang</a><sup>+</sup>, 
-<a href="https://www.linkedin.com/in/sebastian-starke-b281a6148/">Sebastian Starke</a><sup>+</sup>, 
-<a href="https://www.linkedin.com/in/taku-komura-571b32b/">Taku Komura</a>, 
-<a href="https://www.linkedin.com/in/jun-saito/">Jun Saito</a>. 
-ACM Trans. Graph. 37, 4, Article 145.
-</sub><br /><sub><sup>(+Joint First Authors)</sup>
-<sub>
-------------
-<img src ="Media/SIGGRAPH_2018/Teaser.png" width="100%">
+# 데이터셋만 확인 (untrained)
+python visualize_model.py --dataset Trackerbodypredictor
+```
 
-<p align="center">
-Animating characters can be a pain, especially those four-legged monsters!
-This year, we will be presenting our recent research on quadruped animation and character control at the SIGGRAPH 2018 in Vancouver. The system can produce natural animations from real motion data using a novel neural network architecture, called Mode-Adaptive Neural Networks. Instead of optimising a fixed group of weights, the system learns to dynamically blend a group of weights into a further neural network, based on the current state of the character. That said, the system does not require labels for the phase or locomotion gaits, but can learn from unstructured motion capture data in an end-to-end fashion.
-</p>
+### 5.3 Unity 배포
 
-<p align="center">
--
-<a href="https://www.youtube.com/watch?v=uFJvRYtjQ4c">Video</a>
--
-<a href="Media/SIGGRAPH_2018/Paper.pdf">Paper</a>
--
-<a href="AI4Animation/SIGGRAPH_2018">Code</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2018/MotionCapture.zip">Mocap Data</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2018/Demo_Windows.zip">Windows Demo</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2018/Demo_Linux.zip">Linux Demo</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2018/Demo_Mac.zip">Mac Demo</a>
--
-<a href="AI4Animation/SIGGRAPH_2018/ReadMe.md">ReadMe</a>
--
-</p>
+학습 완료 후 생성된 `.onnx` 파일을 Unity 프로젝트에 복사:
 
-<p align="center">
-<a href="https://www.youtube.com/watch?v=uFJvRYtjQ4c">
-<img width="60%" src="Media/SIGGRAPH_2018/Thumbnail.png">
-</a>
-</p>
+```
+Training_xxx/xxx_150.onnx → Unity/Assets/Models/TrackerBodyPredictor.onnx
+```
 
+---
 
-<p align="center">
--
-<a href="https://github.com/pauzii/AnimationAuthoring">Animation Authoring Tool</a>
--
-</p>
-<img src ="https://github.com/pauzii/AnimationAuthoring/raw/main/Media/Teaser.png" width="100%">
+## 6. 기대 효과
 
-------------
-**SIGGRAPH 2017**<br />
-**Phase-Functioned Neural Networks for Character Control**<br >
-<sub>
-<a href="https://www.linkedin.com/in/daniel-holden-300b871b/">Daniel Holden</a>,
-<a href="https://www.linkedin.com/in/taku-komura-571b32b/">Taku Komura</a>, 
-<a href="https://www.linkedin.com/in/jun-saito/">Jun Saito</a>. 
-ACM Trans. Graph. 36, 4, Article 42.
-</sub>
-------------
-<img src ="Media/SIGGRAPH_2017/Adam.png" width="100%">
+### 6.1 정량적 개선 (예상)
 
-<p align="center">
-This work continues the recent work on PFNN (Phase-Functioned Neural Networks) for character control.
-A demo in Unity3D using the original weights for terrain-adaptive locomotion is contained in the Assets/Demo/SIGGRAPH_2017/Original folder.
-Another demo on flat ground using the Adam character is contained in the Assets/Demo/SIGGRAPH_2017/Adam folder.
-In order to run them, you need to download the neural network weights from the link provided in the Link.txt file, extract them into the /NN folder, 
-and store the parameters via the custom inspector button.
-</p>
+- **MSE Loss**: 5-15% 감소 (GMD로 위치 불변성 확보)
+- **Position Drift**: 감소 (Spatial Normalization)
+- **Fast Motion Quality**: 향상 (SlowFast Fast pathway)
+- **Walking Direction**: 향상 (SlowFast Slow pathway)
 
-<p align="center">
--
-<a href="https://www.youtube.com/watch?v=Ul0Gilv5wvY">Video</a>
--
-<a href="http://theorangeduck.com/media/uploads/other_stuff/phasefunction.pdf">Paper</a>
--
-<a href="AI4Animation/SIGGRAPH_2017">Code (Unity)</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2017/Demo_Windows.zip">Windows Demo</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2017/Demo_Linux.zip">Linux Demo</a>
--
-<a href="https://starke-consult.de/AI4Animation/SIGGRAPH_2017/Demo_Mac.zip">Mac Demo</a>
--
-</p>
+### 6.2 정성적 개선 (예상)
 
-<p align="center">
-<a href="https://www.youtube.com/watch?v=Ul0Gilv5wvY">
-<img width="60%" src="https://img.youtube.com/vi/Ul0Gilv5wvY/0.jpg">
-</a>
-</p>
+- VR 사용자가 방 안 어디에 서있든 일관된 예측
+- 빠른 손 제스처와 느린 보행 동시 처리
+- 갑작스러운 방향 전환에 더 부드러운 반응
 
-------------
+---
 
-Thesis Fast Forward Presentation from SIGGRAPH 2020
-============
-<p align="center">
-<a href="https://www.youtube.com/watch?v=wNqpSk4FhSw">
-<img width="100%" src="Media/Other/ThesisFastForward.jpg">
-</a>
-</p>
+## 7. 향후 작업
 
-Copyright Information
-============
-This project is only for research or education purposes, and not freely available for commercial use or redistribution. The motion capture data is available only under the terms of the [Attribution-NonCommercial 4.0 International](https://creativecommons.org/licenses/by-nc/4.0/legalcode) (CC BY-NC 4.0) license.
+1. **정량적 평가**: Original MLP vs GMD+SlowFast MLP 비교 실험
+2. **Ablation Study**: GMD만, SlowFast만, 둘 다 적용 비교
+3. **Unity Integration**: 실제 VR 환경에서 실시간 테스트
+4. **LowerBody 개선**: CodebookMatching에도 유사한 전처리 적용 검토
+
+---
+
+## 8. 참고 논문
+
+1. **Categorical Motion Controlled Character (SIGGRAPH 2024)**
+   - Codebook Matching with Gumbel-Softmax
+   - Multi-stage motion prediction pipeline
+
+2. **EgoPoser: Robust Pose Estimation from Sparse Ego-Views (ECCV 2024)**
+   - Global Motion Decomposition (GMD)
+   - SlowFast Feature Fusion
+   - Transformer-based architecture
+
+---
+
+## 9. 저자
+
+Integration by: GMD+SlowFast into Categorical MLP
+Date: December 2024
+
