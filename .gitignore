@@ -76,3 +76,37 @@ AI4Animation/SIGGRAPH_2022/Unity/Logs
 # Other
 AI4Animation/SIGGRAPH_2020/Unity/Assets/Demo/Basketball/Build
 AI4Animation/SIGGRAPH_2020/Unity/Assets/Demo/Basketball/Build.meta
+
+# =============================================================================
+# Game Engineering - Exclude large data folders
+# =============================================================================
+# Dataset folders (large binary files)
+AI4Animation/game_engineering/**/Dataset/
+AI4Animation/game_engineering/**/Datasets/
+AI4Animation/game_engineering/**/datasets/
+
+# Unity project folders
+AI4Animation/game_engineering/**/Unity/
+AI4Animation/game_engineering/**/[Ll]ibrary/
+AI4Animation/game_engineering/**/[Tt]emp/
+AI4Animation/game_engineering/**/[Oo]bj/
+AI4Animation/game_engineering/**/[Bb]uild/
+AI4Animation/game_engineering/**/[Bb]uilds/
+AI4Animation/game_engineering/**/[Ll]ogs/
+
+# Conda environment
+AI4Animation/game_engineering/**/.conda/
+
+# Training outputs (large model files)
+AI4Animation/game_engineering/**/Training_*/
+
+# Python cache
+AI4Animation/game_engineering/**/__pycache__/
+AI4Animation/game_engineering/**/*.pyc
+
+# ONNX model files (optional - uncomment if you want to exclude)
+# AI4Animation/game_engineering/**/*.onnx
+# AI4Animation/game_engineering/**/*.onnx.data
+
+# Slurm logs
+AI4Animation/game_engineering/**/logs/slurm-*.out

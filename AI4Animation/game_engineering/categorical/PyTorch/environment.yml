@@ -1,0 +1,36 @@
+# Categorical VQ-VAE + GMD Integration
+# Conda Environment Setup
+#
+# 사용법:
+#   conda env create -f environment.yml
+#   conda activate categorical
+
+name: categorical
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip>=23.0
+  
+  # PyTorch with CUDA 12.1 (Windows)
+  - pytorch>=2.0
+  - torchvision>=0.15
+  - pytorch-cuda=12.1
+  
+  # Core dependencies
+  - numpy>=1.24
+  - matplotlib>=3.7
+  - scikit-learn>=1.3
+  - scipy>=1.11
+  
+  # Utilities
+  - tqdm>=4.65
+  - pyyaml>=6.0
+  - pillow>=9.5
+  
+  - pip:
+    - onnx>=1.14
+    - onnxruntime>=1.15
